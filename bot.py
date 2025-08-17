@@ -5,8 +5,7 @@ from datetime import datetime
 from telegram import (
     Update,
     InlineKeyboardButton,
-    InlineKeyboardMarkup,
-    InputMediaPhoto
+    InlineKeyboardMarkup
 )
 from telegram.ext import (
     Application,
@@ -88,14 +87,12 @@ async def handle_date(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     text = update.message.text.strip()
     try:
         date_obj = datetime.strptime(text, "%d.%m.%Y")
-        # Проверим, не в прошлом ли дата
         today = datetime.now().date()
-        if date_obj.date() < today:
-            await update.message.reply_text("⚠️ Дата уже прошла. Укажи будущую дату.")
-            return WAITING_FOR_DATE
-
+        
+        # Убрана проверка на прошедшую дату
         context.user_data['date'] = date_obj.strftime("%d.%m.%Y")
         context.user_data['timestamp'] = date_obj.timestamp()
+        context.user_data['is_past'] = date_obj.date() < today  # Флаг прошедшей даты
 
         await update.message.reply_text("📝 Теперь введи описание (например, 'Контрольная по математике')")
         return WAITING_FOR_DESCRIPTION
@@ -122,7 +119,8 @@ async def handle_description(update: Update, context: ContextTypes.DEFAULT_TYPE)
         "date": context.user_data['date'],
         "description": description,
         "timestamp": context.user_data['timestamp'],
-        "created_at": datetime.now().strftime("%d.%m.%Y %H:%M")
+        "created_at": datetime.now().strftime("%d.%m.%Y %H:%M"),
+        "is_past": context.user_data.get('is_past', False)  # Сохраняем флаг прошедшей даты
     }
 
     # Загружаем старые заметки
@@ -141,9 +139,14 @@ async def handle_description(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await update.message.reply_text("⚠️ Ошибка при сохранении. Попробуй позже.")
         return ConversationHandler.END
 
+    # Определяем статус даты для сообщения
+    date_status = "📅 Дата: " + context.user_data['date']
+    if note['is_past']:
+        date_status += " (прошедшая дата)"
+
     await update.message.reply_text(
         "🎉 Заметка успешно сохранена!\n"
-        f"📅 Дата: {context.user_data['date']}\n"
+        f"{date_status}\n"
         f"📄 Описание: {description}\n"
         f"📎 Фото: {os.path.basename(context.user_data['photo_path'])}"
     )
@@ -166,14 +169,17 @@ async def show_archive(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("📭 У вас пока нет сохраненных напоминаний.")
         return
     
-    # Сортируем по дате напоминания
-    notes = sorted(notes, key=lambda x: x['timestamp'])
+    # Сортируем по дате напоминания (от новых к старым)
+    notes = sorted(notes, key=lambda x: x['timestamp'], reverse=True)
     
-    # Формируем список для отображения
+    # Формируем список для отображения с отметкой о прошедших датах
     archive_list = []
     for i, note in enumerate(notes, 1):
+        status = "✅" if not note.get('is_past', False) else "⌛"
+        date_info = f"{note['date']} {status}"
+        
         archive_list.append(
-            f"{i}. 📅 {note['date']}\n"
+            f"{i}. {date_info}\n"
             f"   📝 {note['description']}\n"
             f"   🕒 Сохранено: {note['created_at']}"
         )
@@ -200,6 +206,9 @@ async def view_photos(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not notes:
         await query.edit_message_text("📭 У вас пока нет сохраненных напоминаний.")
         return
+    
+    # Сортируем по дате (от новых к старым)
+    notes = sorted(notes, key=lambda x: x['timestamp'], reverse=True)
     
     # Отправляем первое фото
     context.user_data['archive_index'] = 0
@@ -228,11 +237,16 @@ async def send_photo_from_archive(message, context: ContextTypes.DEFAULT_TYPE):
     
     reply_markup = InlineKeyboardMarkup(keyboard_rows)
     
+    # Добавляем статус даты в описание
+    date_status = "📅 Дата: " + note['date']
+    if note.get('is_past', False):
+        date_status += " (прошедшая)"
+    
     try:
         with open(note['photo_path'], 'rb') as photo:
             await message.reply_photo(
                 photo=photo,
-                caption=f"📅 Дата: {note['date']}\n"
+                caption=f"{date_status}\n"
                         f"📝 Описание: {note['description']}\n"
                         f"🕒 Сохранено: {note['created_at']}",
                 reply_markup=reply_markup
