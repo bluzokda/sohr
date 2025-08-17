@@ -39,6 +39,7 @@ if not WEBHOOK_URL_BASE:
 WAITING_FOR_PHOTO = 0
 WAITING_FOR_DATE = 1
 WAITING_FOR_DESCRIPTION = 2
+WAITING_FOR_DELETE_NUMBER = 3  # Новый статус для удаления
 
 # Функция для загрузки заметок пользователя
 def load_user_notes(user_id: int) -> list:
@@ -172,6 +173,9 @@ async def show_archive(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Сортируем по дате напоминания (от новых к старым)
     notes = sorted(notes, key=lambda x: x['timestamp'], reverse=True)
     
+    # Сохраняем заметки для навигации
+    context.user_data['archive_notes'] = notes
+    
     # Формируем список для отображения с отметкой о прошедших датах
     archive_list = []
     for i, note in enumerate(notes, 1):
@@ -184,9 +188,10 @@ async def show_archive(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"   🕒 Сохранено: {note['created_at']}"
         )
     
-    # Добавляем кнопку для просмотра фото
+    # Добавляем кнопки для просмотра фото и удаления
     keyboard = [
-        [InlineKeyboardButton("👀 Просмотреть фото", callback_data="view_photos")]
+        [InlineKeyboardButton("👀 Просмотреть фото", callback_data="view_photos")],
+        [InlineKeyboardButton("🗑️ Удалить фото", callback_data="delete_photo_prompt")
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
@@ -201,7 +206,7 @@ async def view_photos(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     
     user_id = query.from_user.id
-    notes = load_user_notes(user_id)
+    notes = context.user_data.get('archive_notes', load_user_notes(user_id))
     
     if not notes:
         await query.edit_message_text("📭 У вас пока нет сохраненных напоминаний.")
@@ -210,10 +215,43 @@ async def view_photos(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Сортируем по дате (от новых к старым)
     notes = sorted(notes, key=lambda x: x['timestamp'], reverse=True)
     
-    # Отправляем первое фото
-    context.user_data['archive_index'] = 0
+    # Сохраняем заметки и создаем меню выбора
     context.user_data['archive_notes'] = notes
     
+    # Создаем клавиатуру с номерами фото
+    keyboard = []
+    row = []
+    for i in range(len(notes)):
+        row.append(InlineKeyboardButton(str(i+1), callback_data=f"select_photo_{i}"))
+        if len(row) == 5:  # 5 кнопок в строке
+            keyboard.append(row)
+            row = []
+    if row:
+        keyboard.append(row)
+    
+    keyboard.append([InlineKeyboardButton("❌ Закрыть", callback_data="close_viewer")])
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await query.edit_message_text(
+        "📸 Выберите номер фото для просмотра:",
+        reply_markup=reply_markup
+    )
+
+# Обработчик выбора конкретной фотки
+async def select_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    data = query.data
+    photo_index = int(data.split('_')[-1])
+    notes = context.user_data['archive_notes']
+    
+    if photo_index < 0 or photo_index >= len(notes):
+        await query.answer("⚠️ Неверный номер фото!")
+        return
+    
+    context.user_data['archive_index'] = photo_index
     await send_photo_from_archive(query.message, context)
 
 # Функция отправки фото из архива
@@ -227,13 +265,16 @@ async def send_photo_from_archive(message, context: ContextTypes.DEFAULT_TYPE):
     if index > 0:
         keyboard.append(InlineKeyboardButton("⬅️ Назад", callback_data="prev_photo"))
     
-    keyboard.append(InlineKeyboardButton(f"{index+1}/{len(notes)}", callback_data="counter"))
+    keyboard.append(InlineKeyboardButton(f"{index+1}/{len(notes)}", callback_data="photo_index"))
     
     if index < len(notes) - 1:
         keyboard.append(InlineKeyboardButton("Вперед ➡️", callback_data="next_photo"))
     
     keyboard_rows = [keyboard]
-    keyboard_rows.append([InlineKeyboardButton("❌ Закрыть просмотр", callback_data="close_viewer")])
+    keyboard_rows.append([
+        InlineKeyboardButton("🗑️ Удалить", callback_data="delete_current_photo"),
+        InlineKeyboardButton("❌ Закрыть", callback_data="close_viewer")
+    ])
     
     reply_markup = InlineKeyboardMarkup(keyboard_rows)
     
@@ -244,13 +285,25 @@ async def send_photo_from_archive(message, context: ContextTypes.DEFAULT_TYPE):
     
     try:
         with open(note['photo_path'], 'rb') as photo:
-            await message.reply_photo(
+            # Удаляем предыдущее сообщение с фото, если есть
+            if 'photo_message_id' in context.user_data:
+                try:
+                    await context.bot.delete_message(
+                        chat_id=message.chat_id,
+                        message_id=context.user_data['photo_message_id']
+                    )
+                except:
+                    pass
+            
+            # Отправляем новое фото
+            sent_message = await message.reply_photo(
                 photo=photo,
                 caption=f"{date_status}\n"
                         f"📝 Описание: {note['description']}\n"
                         f"🕒 Сохранено: {note['created_at']}",
                 reply_markup=reply_markup
             )
+            context.user_data['photo_message_id'] = sent_message.message_id
     except FileNotFoundError:
         await message.reply_text("⚠️ Фото не найдено. Возможно, оно было удалено.")
 
@@ -268,17 +321,141 @@ async def handle_photo_navigation(update: Update, context: ContextTypes.DEFAULT_
     elif data == "next_photo" and index < len(notes) - 1:
         context.user_data['archive_index'] += 1
     elif data == "close_viewer":
-        await query.message.delete()
+        try:
+            await query.message.delete()
+        except:
+            pass
         return
     
-    # Удаляем предыдущее сообщение с фото
-    try:
-        await query.message.delete()
-    except Exception as e:
-        logger.error(f"Ошибка при удалении сообщения: {e}")
-    
-    # Отправляем новое фото
     await send_photo_from_archive(query.message, context)
+
+# Обработчик команды /delete
+async def delete_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+    notes = load_user_notes(user_id)
+    
+    if not notes:
+        await update.message.reply_text("📭 У вас пока нет сохраненных фото.")
+        return
+    
+    # Сохраняем заметки для удаления
+    context.user_data['delete_notes'] = notes
+    
+    # Формируем список для выбора
+    archive_list = []
+    for i, note in enumerate(notes, 1):
+        archive_list.append(f"{i}. {note['description']} ({note['date']})")
+    
+    await update.message.reply_text(
+        "🗑️ Введите номер фото для удаления:\n\n" + "\n".join(archive_list)
+    )
+    
+    return WAITING_FOR_DELETE_NUMBER
+
+# Обработчик ввода номера для удаления
+async def handle_delete_number(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    text = update.message.text.strip()
+    user_id = update.message.from_user.id
+    
+    try:
+        note_index = int(text) - 1
+        notes = context.user_data['delete_notes']
+        
+        if note_index < 0 or note_index >= len(notes):
+            await update.message.reply_text("❌ Неверный номер. Попробуйте снова.")
+            return WAITING_FOR_DELETE_NUMBER
+        
+        # Удаляем файл фото
+        photo_path = notes[note_index]['photo_path']
+        try:
+            os.remove(photo_path)
+            logger.info(f"Фото удалено: {photo_path}")
+        except OSError as e:
+            logger.error(f"Ошибка удаления фото: {e}")
+        
+        # Удаляем заметку
+        deleted_note = notes.pop(note_index)
+        
+        # Сохраняем обновленный список
+        data_file = os.path.join("data", f"user_{user_id}_notes.json")
+        try:
+            with open(data_file, 'w', encoding='utf-8') as f:
+                json.dump(notes, f, indent=2, ensure_ascii=False)
+        except Exception as e:
+            logger.error(f"Ошибка сохранения после удаления: {e}")
+            await update.message.reply_text("⚠️ Ошибка при удалении. Попробуйте позже.")
+            return ConversationHandler.END
+        
+        await update.message.reply_text(
+            f"✅ Фото удалено:\n"
+            f"📅 Дата: {deleted_note['date']}\n"
+            f"📝 Описание: {deleted_note['description']}"
+        )
+        
+        return ConversationHandler.END
+
+    except ValueError:
+        await update.message.reply_text("❌ Пожалуйста, введите число.")
+        return WAITING_FOR_DELETE_NUMBER
+
+# Обработчик удаления текущей фотки из просмотра
+async def delete_current_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    user_id = query.from_user.id
+    notes = context.user_data['archive_notes']
+    index = context.user_data['archive_index']
+    
+    if index < 0 or index >= len(notes):
+        await query.answer("⚠️ Неверный номер фото!")
+        return
+    
+    # Удаляем файл фото
+    photo_path = notes[index]['photo_path']
+    try:
+        os.remove(photo_path)
+        logger.info(f"Фото удалено: {photo_path}")
+    except OSError as e:
+        logger.error(f"Ошибка удаления фото: {e}")
+    
+    # Удаляем заметку
+    deleted_note = notes.pop(index)
+    
+    # Сохраняем обновленный список
+    data_file = os.path.join("data", f"user_{user_id}_notes.json")
+    try:
+        with open(data_file, 'w', encoding='utf-8') as f:
+            json.dump(notes, f, indent=2, ensure_ascii=False)
+    except Exception as e:
+        logger.error(f"Ошибка сохранения после удаления: {e}")
+        await query.answer("⚠️ Ошибка при удалении. Попробуйте позже.")
+        return
+    
+    # Обновляем контекст
+    context.user_data['archive_notes'] = notes
+    
+    if not notes:
+        await query.message.delete()
+        await context.bot.send_message(
+            chat_id=query.message.chat_id,
+            text="✅ Фото удалено. В архиве больше нет фото."
+        )
+        return
+    
+    # Корректируем индекс
+    if index >= len(notes):
+        context.user_data['archive_index'] = len(notes) - 1
+    
+    # Показываем следующее фото или закрываем просмотр
+    if notes:
+        await send_photo_from_archive(query.message, context)
+    else:
+        await query.message.delete()
+        await context.bot.send_message(
+            chat_id=query.message.chat_id,
+            text="✅ Фото удалено. В архиве больше нет фото."
+        )
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.error(f"❗ Произошла ошибка: {context.error}", exc_info=True)
@@ -318,6 +495,10 @@ def main() -> None:
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_description),
                 CommandHandler("cancel", cancel)
             ],
+            WAITING_FOR_DELETE_NUMBER: [  # Новый статус для удаления
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_delete_number),
+                CommandHandler("cancel", cancel)
+            ],
         },
         fallbacks=[CommandHandler("cancel", cancel)],
         per_user=True,
@@ -326,8 +507,15 @@ def main() -> None:
 
     application.add_handler(conv_handler)
     application.add_handler(CommandHandler("archive", show_archive))
+    application.add_handler(CommandHandler("delete", delete_photo))  # Новая команда
+    
+    # Обработчики callback-кнопок
     application.add_handler(CallbackQueryHandler(view_photos, pattern="^view_photos$"))
+    application.add_handler(CallbackQueryHandler(select_photo, pattern=r"^select_photo_\d+$"))
     application.add_handler(CallbackQueryHandler(handle_photo_navigation, pattern="^(prev_photo|next_photo|close_viewer)$"))
+    application.add_handler(CallbackQueryHandler(delete_current_photo, pattern="^delete_current_photo$"))
+    application.add_handler(CallbackQueryHandler(delete_photo, pattern="^delete_photo_prompt$"))
+    
     application.add_error_handler(error_handler)
 
     # Формируем URL вебхука: https://your-app.onrender.com/BOT_TOKEN
