@@ -1,5 +1,6 @@
 import os
 import logging
+import json
 from datetime import datetime
 from telegram import Update
 from telegram.ext import (
@@ -66,8 +67,9 @@ async def handle_date(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     text = update.message.text.strip()
     try:
         date_obj = datetime.strptime(text, "%d.%m.%Y")
-        # Проверим, не в прошлом ли дата (опционально)
-        if date_obj.date() < datetime.now().date():
+        # Проверим, не в прошлом ли дата
+        today = datetime.now().date()
+        if date_obj.date() < today:
             await update.message.reply_text("⚠️ Дата уже прошла. Укажи будущую дату.")
             return WAITING_FOR_DATE
 
@@ -149,9 +151,6 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
         except:
             pass  # Игнорируем, если не можем отправить
 
-# Импорт json здесь, чтобы не было ошибки выше
-import json
-
 def main() -> None:
     # Проверка токена и URL
     if not TOKEN:
@@ -168,9 +167,18 @@ def main() -> None:
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
         states={
-            WAITING_FOR_PHOTO: [MessageHandler(filters.PHOTO, handle_photo)],
-            WAITING_FOR_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_date)],
-            WAITING_FOR_DESCRIPTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_description)],
+            WAITING_FOR_PHOTO: [
+                MessageHandler(filters.PHOTO, handle_photo),
+                CommandHandler("cancel", cancel)
+            ],
+            WAITING_FOR_DATE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_date),
+                CommandHandler("cancel", cancel)
+            ],
+            WAITING_FOR_DESCRIPTION: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_description),
+                CommandHandler("cancel", cancel)
+            ],
         },
         fallbacks=[CommandHandler("cancel", cancel)],
         per_user=True,
@@ -193,7 +201,6 @@ def main() -> None:
         url_path=TOKEN,
         webhook_url=webhook_url,
         drop_pending_updates=True,
-        secret_token=None  # Можно добавить для безопасности
     )
 
 if __name__ == '__main__':
