@@ -51,8 +51,10 @@ def main() -> None:
         logger.error("TELEGRAM_TOKEN не установлен!")
         return
 
+    # Решение проблемы с JobQueue
     application = Application.builder().token(TOKEN).build()
-
+    application.job_queue = None  # Отключаем JobQueue
+    
     # Регистрация обработчиков
     application.add_handler(CommandHandler("start", start))
     application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
