@@ -62,7 +62,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
-    # Исправление: проверка типа апдейта
     if update.message:
         await update.message.reply_text(
             "📸 Привет! Отправь мне фото, которое нужно запомнить.\n\n"
@@ -159,7 +158,6 @@ async def handle_description(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if note['is_past']:
         date_status += " (прошедшая дата)"
 
-    # ИСПРАВЛЕНИЕ: правильное имя функции basename вместо pathasename
     await update.message.reply_text(
         "🎉 Заметка успешно сохранена!\n"
         f"{date_status}\n"
@@ -211,8 +209,21 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # Обработчик команды /archive
 async def show_archive(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Исправление: работаем с callback_query если нет message
-    user_id = update.message.from_user.id if update.message else update.callback_query.from_user.id
+    # Определяем источник запроса (сообщение или callback)
+    if update.message:
+        message = update.message
+        user_id = update.message.from_user.id
+        is_callback = False
+    elif update.callback_query:
+        query = update.callback_query
+        await query.answer()
+        message = query.message
+        user_id = query.from_user.id
+        is_callback = True
+    else:
+        logger.error("Не удалось определить источник запроса в show_archive")
+        return
+    
     notes = load_user_notes(user_id)
     
     if not notes:
@@ -221,14 +232,13 @@ async def show_archive(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        if update.message:
-            await update.message.reply_text(
+        if is_callback:
+            await message.edit_text(
                 "📭 У вас пока нет сохраненных напоминаний.",
                 reply_markup=reply_markup
             )
         else:
-            query = update.callback_query
-            await query.edit_message_text(
+            await message.reply_text(
                 "📭 У вас пока нет сохраненных напоминаний.",
                 reply_markup=reply_markup
             )
@@ -260,15 +270,16 @@ async def show_archive(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
-    if update.message:
-        await update.message.reply_text(
-            "📚 Ваш архив напоминаний:\n\n" + "\n\n".join(archive_list),
+    text_content = "📚 Ваш архив напоминаний:\n\n" + "\n\n".join(archive_list)
+    
+    if is_callback:
+        await message.edit_text(
+            text_content,
             reply_markup=reply_markup
         )
     else:
-        query = update.callback_query
-        await query.edit_message_text(
-            "📚 Ваш архив напоминаний:\n\n" + "\n\n".join(archive_list),
+        await message.reply_text(
+            text_content,
             reply_markup=reply_markup
         )
 
@@ -565,7 +576,6 @@ async def start_saving(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     query = update.callback_query
     await query.answer()
     
-    # Исправление: используем правильный метод для начала диалога
     if query.message:
         await query.message.reply_text(
             "📸 Привет! Отправь мне фото, которое нужно запомнить.\n\n"
@@ -573,26 +583,6 @@ async def start_saving(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         )
         return WAITING_FOR_PHOTO
     return ConversationHandler.END
-
-# Обработчик кнопки "Просмотреть архив"
-async def view_archive(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    
-    # Создаем фейковое сообщение для обработки команды
-    class FakeMessage:
-        def __init__(self, chat_id, from_user):
-            self.chat_id = chat_id
-            self.from_user = from_user
-            
-    fake_update = Update(
-        update.update_id,
-        message=FakeMessage(
-            chat_id=query.message.chat_id,
-            from_user=query.from_user
-        )
-    )
-    await show_archive(fake_update, context)
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.error(f"❗ Произошла ошибка: {context.error}", exc_info=True)
@@ -649,6 +639,7 @@ def main() -> None:
     
     # Обработчики callback-кнопок
     application.add_handler(CallbackQueryHandler(help_command, pattern="^help_command$"))
+    application.add_handler(CallbackQueryHandler(show_archive, pattern="^view_archive$"))  # Исправлено!
     application.add_handler(CallbackQueryHandler(view_photos, pattern="^view_photos$"))
     application.add_handler(CallbackQueryHandler(select_photo, pattern=r"^select_photo_\d+$"))
     application.add_handler(CallbackQueryHandler(handle_photo_navigation, pattern="^(prev_photo|next_photo|close_viewer)$"))
@@ -656,7 +647,6 @@ def main() -> None:
     application.add_handler(CallbackQueryHandler(delete_photo, pattern="^delete_photo_prompt$"))
     application.add_handler(CallbackQueryHandler(cancel_delete, pattern="^cancel_delete$"))
     application.add_handler(CallbackQueryHandler(start_saving, pattern="^start_saving$"))
-    application.add_handler(CallbackQueryHandler(view_archive, pattern="^view_archive$"))
     
     application.add_error_handler(error_handler)
 
