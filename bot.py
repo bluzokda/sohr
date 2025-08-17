@@ -2,11 +2,11 @@ import os
 import logging
 from telegram import Update
 from telegram.ext import (
-    Updater,
+    Application,
     CommandHandler,
     MessageHandler,
-    Filters,
-    CallbackContext
+    filters,
+    ContextTypes
 )
 
 # Настройка логгирования
@@ -21,12 +21,12 @@ TOKEN = os.environ.get('TELEGRAM_TOKEN')
 PORT = int(os.environ.get('PORT', 8443))
 WEBHOOK_URL = os.environ.get('WEBHOOK_URL') + '/'
 
-def start(update: Update, context: CallbackContext) -> None:
-    update.message.reply_text('Привет! Отправь мне фото, и я сохраню его.')
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await update.message.reply_text('Привет! Отправь мне фото, и я сохраню его.')
 
-def handle_photo(update: Update, context: CallbackContext) -> None:
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.message.from_user
-    photo_file = update.message.photo[-1].get_file()
+    photo_file = await update.message.photo[-1].get_file()
     
     # Создаем папку для пользователя
     user_dir = f"photos/user_{user.id}"
@@ -37,37 +37,36 @@ def handle_photo(update: Update, context: CallbackContext) -> None:
     file_path = os.path.join(user_dir, file_name)
     
     # Сохраняем фото
-    photo_file.download(file_path)
+    await photo_file.download_to_drive(file_path)
     logger.info(f"Фото сохранено: {file_path}")
-    update.message.reply_text('✅ Фото успешно сохранено!')
+    await update.message.reply_text('✅ Фото успешно сохранено!')
 
-def error_handler(update: Update, context: CallbackContext) -> None:
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.error(f'Ошибка: {context.error}')
-    if update.message:
-        update.message.reply_text('⚠️ Произошла ошибка при обработке фото')
+    if isinstance(update, Update) and update.message:
+        await update.message.reply_text('⚠️ Произошла ошибка при обработке фото')
 
 def main() -> None:
     if not TOKEN:
         logger.error("TELEGRAM_TOKEN не установлен!")
         return
 
-    updater = Updater(TOKEN)
-    dp = updater.dispatcher
+    application = Application.builder().token(TOKEN).build()
 
     # Регистрация обработчиков
-    dp.add_handler(CommandHandler("start", start))
-    dp.add_handler(MessageHandler(Filters.photo, handle_photo))
-    dp.add_error_handler(error_handler)
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+    application.add_error_handler(error_handler)
 
     # Настройка webhook
-    updater.start_webhook(
+    application.run_webhook(
         listen="0.0.0.0",
         port=PORT,
         url_path=TOKEN,
-        webhook_url=WEBHOOK_URL + TOKEN
+        webhook_url=WEBHOOK_URL + TOKEN,
+        drop_pending_updates=True
     )
     logger.info(f"Бот запущен на порту {PORT} с webhook: {WEBHOOK_URL}")
-    updater.idle()
 
 if __name__ == '__main__':
     main()
