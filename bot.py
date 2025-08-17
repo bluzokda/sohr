@@ -2,11 +2,17 @@ import os
 import logging
 import json
 from datetime import datetime
-from telegram import Update
+from telegram import (
+    Update,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    InputMediaPhoto
+)
 from telegram.ext import (
     Application,
     CommandHandler,
     MessageHandler,
+    CallbackQueryHandler,
     filters,
     ContextTypes,
     ConversationHandler,
@@ -34,6 +40,21 @@ if not WEBHOOK_URL_BASE:
 WAITING_FOR_PHOTO = 0
 WAITING_FOR_DATE = 1
 WAITING_FOR_DESCRIPTION = 2
+
+# Функция для загрузки заметок пользователя
+def load_user_notes(user_id: int) -> list:
+    data_dir = "data"
+    data_file = os.path.join(data_dir, f"user_{user_id}_notes.json")
+    
+    if not os.path.exists(data_file):
+        return []
+    
+    try:
+        with open(data_file, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except (json.JSONDecodeError, IOError) as e:
+        logger.error(f"Ошибка загрузки заметок: {e}")
+        return []
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await update.message.reply_text(
@@ -100,17 +121,12 @@ async def handle_description(update: Update, context: ContextTypes.DEFAULT_TYPE)
         "photo_path": context.user_data['photo_path'],
         "date": context.user_data['date'],
         "description": description,
-        "timestamp": context.user_data['timestamp']
+        "timestamp": context.user_data['timestamp'],
+        "created_at": datetime.now().strftime("%d.%m.%Y %H:%M")
     }
 
     # Загружаем старые заметки
-    notes = []
-    if os.path.exists(data_file):
-        try:
-            with open(data_file, 'r', encoding='utf-8') as f:
-                notes = json.load(f)
-        except (json.JSONDecodeError, IOError) as e:
-            logger.warning(f"Не удалось прочитать файл заметок: {e}")
+    notes = load_user_notes(user_id)
 
     # Добавляем новую
     notes.append(note)
@@ -140,6 +156,115 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await update.message.reply_text("❌ Операция отменена.")
     context.user_data.clear()
     return ConversationHandler.END
+
+# Обработчик команды /archive
+async def show_archive(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+    notes = load_user_notes(user_id)
+    
+    if not notes:
+        await update.message.reply_text("📭 У вас пока нет сохраненных напоминаний.")
+        return
+    
+    # Сортируем по дате напоминания
+    notes = sorted(notes, key=lambda x: x['timestamp'])
+    
+    # Формируем список для отображения
+    archive_list = []
+    for i, note in enumerate(notes, 1):
+        archive_list.append(
+            f"{i}. 📅 {note['date']}\n"
+            f"   📝 {note['description']}\n"
+            f"   🕒 Сохранено: {note['created_at']}"
+        )
+    
+    # Добавляем кнопку для просмотра фото
+    keyboard = [
+        [InlineKeyboardButton("👀 Просмотреть фото", callback_data="view_photos")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await update.message.reply_text(
+        "📚 Ваш архив напоминаний:\n\n" + "\n\n".join(archive_list),
+        reply_markup=reply_markup
+    )
+
+# Обработчик кнопки просмотра фото
+async def view_photos(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    user_id = query.from_user.id
+    notes = load_user_notes(user_id)
+    
+    if not notes:
+        await query.edit_message_text("📭 У вас пока нет сохраненных напоминаний.")
+        return
+    
+    # Отправляем первое фото
+    context.user_data['archive_index'] = 0
+    context.user_data['archive_notes'] = notes
+    
+    await send_photo_from_archive(query.message, context)
+
+# Функция отправки фото из архива
+async def send_photo_from_archive(message, context: ContextTypes.DEFAULT_TYPE):
+    notes = context.user_data['archive_notes']
+    index = context.user_data['archive_index']
+    note = notes[index]
+    
+    # Создаем клавиатуру навигации
+    keyboard = []
+    if index > 0:
+        keyboard.append(InlineKeyboardButton("⬅️ Назад", callback_data="prev_photo"))
+    
+    keyboard.append(InlineKeyboardButton(f"{index+1}/{len(notes)}", callback_data="counter"))
+    
+    if index < len(notes) - 1:
+        keyboard.append(InlineKeyboardButton("Вперед ➡️", callback_data="next_photo"))
+    
+    keyboard_rows = [keyboard]
+    keyboard_rows.append([InlineKeyboardButton("❌ Закрыть просмотр", callback_data="close_viewer")])
+    
+    reply_markup = InlineKeyboardMarkup(keyboard_rows)
+    
+    try:
+        with open(note['photo_path'], 'rb') as photo:
+            await message.reply_photo(
+                photo=photo,
+                caption=f"📅 Дата: {note['date']}\n"
+                        f"📝 Описание: {note['description']}\n"
+                        f"🕒 Сохранено: {note['created_at']}",
+                reply_markup=reply_markup
+            )
+    except FileNotFoundError:
+        await message.reply_text("⚠️ Фото не найдено. Возможно, оно было удалено.")
+
+# Обработчик навигации по фото
+async def handle_photo_navigation(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    data = query.data
+    notes = context.user_data['archive_notes']
+    index = context.user_data['archive_index']
+    
+    if data == "prev_photo" and index > 0:
+        context.user_data['archive_index'] -= 1
+    elif data == "next_photo" and index < len(notes) - 1:
+        context.user_data['archive_index'] += 1
+    elif data == "close_viewer":
+        await query.message.delete()
+        return
+    
+    # Удаляем предыдущее сообщение с фото
+    try:
+        await query.message.delete()
+    except Exception as e:
+        logger.error(f"Ошибка при удалении сообщения: {e}")
+    
+    # Отправляем новое фото
+    await send_photo_from_archive(query.message, context)
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.error(f"❗ Произошла ошибка: {context.error}", exc_info=True)
@@ -186,6 +311,9 @@ def main() -> None:
     )
 
     application.add_handler(conv_handler)
+    application.add_handler(CommandHandler("archive", show_archive))
+    application.add_handler(CallbackQueryHandler(view_photos, pattern="^view_photos$"))
+    application.add_handler(CallbackQueryHandler(handle_photo_navigation, pattern="^(prev_photo|next_photo|close_viewer)$"))
     application.add_error_handler(error_handler)
 
     # Формируем URL вебхука: https://your-app.onrender.com/BOT_TOKEN
