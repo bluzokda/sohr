@@ -189,7 +189,7 @@ async def show_archive(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     
     # Добавляем кнопки для просмотра фото и удаления
-    keyboard = []
+    keyboard = [
         [InlineKeyboardButton("👀 Просмотреть фото", callback_data="view_photos")],
         [InlineKeyboardButton("🗑️ Удалить фото", callback_data="delete_photo_prompt")
     ]
