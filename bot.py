@@ -39,7 +39,7 @@ if not WEBHOOK_URL_BASE:
 WAITING_FOR_PHOTO = 0
 WAITING_FOR_DATE = 1
 WAITING_FOR_DESCRIPTION = 2
-WAITING_FOR_DELETE_NUMBER = 3  # Новый статус для удаления
+WAITING_FOR_DELETE_NUMBER = 3
 
 # Функция для загрузки заметок пользователя
 def load_user_notes(user_id: int) -> list:
@@ -57,8 +57,15 @@ def load_user_notes(user_id: int) -> list:
         return []
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    keyboard = [
+        [InlineKeyboardButton("🆘 Помощь", callback_data="help_command")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
     await update.message.reply_text(
-        "📸 Привет! Отправь мне фото, которое нужно запомнить."
+        "📸 Привет! Отправь мне фото, которое нужно запомнить.\n\n"
+        "ℹ️ Для справки используй /help",
+        reply_markup=reply_markup
     )
     return WAITING_FOR_PHOTO
 
@@ -90,10 +97,9 @@ async def handle_date(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
         date_obj = datetime.strptime(text, "%d.%m.%Y")
         today = datetime.now().date()
         
-        # Убрана проверка на прошедшую дату
         context.user_data['date'] = date_obj.strftime("%d.%m.%Y")
         context.user_data['timestamp'] = date_obj.timestamp()
-        context.user_data['is_past'] = date_obj.date() < today  # Флаг прошедшей даты
+        context.user_data['is_past'] = date_obj.date() < today
 
         await update.message.reply_text("📝 Теперь введи описание (например, 'Контрольная по математике')")
         return WAITING_FOR_DESCRIPTION
@@ -121,7 +127,7 @@ async def handle_description(update: Update, context: ContextTypes.DEFAULT_TYPE)
         "description": description,
         "timestamp": context.user_data['timestamp'],
         "created_at": datetime.now().strftime("%d.%m.%Y %H:%M"),
-        "is_past": context.user_data.get('is_past', False)  # Сохраняем флаг прошедшей даты
+        "is_past": context.user_data.get('is_past', False)
     }
 
     # Загружаем старые заметки
@@ -149,7 +155,7 @@ async def handle_description(update: Update, context: ContextTypes.DEFAULT_TYPE)
         "🎉 Заметка успешно сохранена!\n"
         f"{date_status}\n"
         f"📄 Описание: {description}\n"
-        f"📎 Фото: {os.path.basename(context.user_data['photo_path'])}"
+        f"📎 Фото: {os.pathasename(context.user_data['photo_path'])}"
     )
 
     # Очистка
@@ -161,13 +167,54 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data.clear()
     return ConversationHandler.END
 
+# Обработчик команды /help
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    help_text = (
+        "📚 <b>Справка по командам бота:</b>\n\n"
+        "🆘 /help - Показать эту справку\n"
+        "📸 /start - Начать сохранение нового фото\n"
+        "📚 /archive - Показать архив сохраненных фото\n"
+        "🗑️ /delete - Удалить фото по номеру\n\n"
+        "ℹ️ <b>Как использовать:</b>\n"
+        "1. Отправь фото с помощью /start\n"
+        "2. Укажи дату напоминания в формате ДД.ММ.ГГГГ\n"
+        "3. Добавь описание\n\n"
+        "📚 В архиве (/archive) ты можешь:\n"
+        "- Просматривать все сохраненные фото\n"
+        "- Удалять ненужные фото\n"
+        "- Переключаться между фото\n\n"
+        "⚙️ Бот автоматически напомнит о событии в указанную дату!"
+    )
+    
+    keyboard = [
+        [InlineKeyboardButton("🆘 Помощь", callback_data="help_command"),
+         InlineKeyboardButton("📚 Архив", callback_data="view_archive")],
+        [InlineKeyboardButton("📸 Начать сохранение", callback_data="start_saving")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    if update.message:
+        await update.message.reply_text(help_text, parse_mode="HTML", reply_markup=reply_markup)
+    else:
+        query = update.callback_query
+        await query.answer()
+        await query.edit_message_text(help_text, parse_mode="HTML", reply_markup=reply_markup)
+
 # Обработчик команды /archive
 async def show_archive(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
     notes = load_user_notes(user_id)
     
     if not notes:
-        await update.message.reply_text("📭 У вас пока нет сохраненных напоминаний.")
+        keyboard = [
+            [InlineKeyboardButton("📸 Начать сохранение", callback_data="start_saving")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await update.message.reply_text(
+            "📭 У вас пока нет сохраненных напоминаний.",
+            reply_markup=reply_markup
+        )
         return
     
     # Сортируем по дате напоминания (от новых к старым)
@@ -191,7 +238,8 @@ async def show_archive(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Добавляем кнопки для просмотра фото и удаления
     keyboard = [
         [InlineKeyboardButton("👀 Просмотреть фото", callback_data="view_photos")],
-        [InlineKeyboardButton("🗑️ Удалить фото", callback_data="delete_photo_prompt")
+        [InlineKeyboardButton("🗑️ Удалить фото", callback_data="delete_photo_prompt")],
+        [InlineKeyboardButton("🆘 Помощь", callback_data="help_command")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
@@ -209,7 +257,15 @@ async def view_photos(update: Update, context: ContextTypes.DEFAULT_TYPE):
     notes = context.user_data.get('archive_notes', load_user_notes(user_id))
     
     if not notes:
-        await query.edit_message_text("📭 У вас пока нет сохраненных напоминаний.")
+        keyboard = [
+            [InlineKeyboardButton("📸 Начать сохранение", callback_data="start_saving")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(
+            "📭 У вас пока нет сохраненных напоминаний.",
+            reply_markup=reply_markup
+        )
         return
     
     # Сортируем по дате (от новых к старым)
@@ -229,7 +285,10 @@ async def view_photos(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if row:
         keyboard.append(row)
     
-    keyboard.append([InlineKeyboardButton("❌ Закрыть", callback_data="close_viewer")])
+    keyboard.append([
+        InlineKeyboardButton("🆘 Помощь", callback_data="help_command"),
+        InlineKeyboardButton("❌ Закрыть", callback_data="close_viewer")
+    ])
     
     reply_markup = InlineKeyboardMarkup(keyboard)
     
@@ -273,6 +332,7 @@ async def send_photo_from_archive(message, context: ContextTypes.DEFAULT_TYPE):
     keyboard_rows = [keyboard]
     keyboard_rows.append([
         InlineKeyboardButton("🗑️ Удалить", callback_data="delete_current_photo"),
+        InlineKeyboardButton("🆘 Помощь", callback_data="help_command"),
         InlineKeyboardButton("❌ Закрыть", callback_data="close_viewer")
     ])
     
@@ -346,8 +406,14 @@ async def delete_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for i, note in enumerate(notes, 1):
         archive_list.append(f"{i}. {note['description']} ({note['date']})")
     
+    keyboard = [
+        [InlineKeyboardButton("❌ Отмена", callback_data="cancel_delete")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
     await update.message.reply_text(
-        "🗑️ Введите номер фото для удаления:\n\n" + "\n".join(archive_list)
+        "🗑️ Введите номер фото для удаления:\n\n" + "\n".join(archive_list),
+        reply_markup=reply_markup
     )
     
     return WAITING_FOR_DELETE_NUMBER
@@ -437,9 +503,15 @@ async def delete_current_photo(update: Update, context: ContextTypes.DEFAULT_TYP
     
     if not notes:
         await query.message.delete()
+        keyboard = [
+            [InlineKeyboardButton("📸 Начать сохранение", callback_data="start_saving")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
         await context.bot.send_message(
             chat_id=query.message.chat_id,
-            text="✅ Фото удалено. В архиве больше нет фото."
+            text="✅ Фото удалено. В архиве больше нет фото.",
+            reply_markup=reply_markup
         )
         return
     
@@ -457,15 +529,34 @@ async def delete_current_photo(update: Update, context: ContextTypes.DEFAULT_TYP
             text="✅ Фото удалено. В архиве больше нет фото."
         )
 
+# Обработчик кнопки отмены удаления
+async def cancel_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    await query.message.delete()
+    await query.message.reply_text("❌ Удаление отменено.")
+
+# Обработчик кнопки "Начать сохранение"
+async def start_saving(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    await start(update, context)
+
+# Обработчик кнопки "Просмотреть архив"
+async def view_archive(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    await show_archive(update, context)
+
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.error(f"❗ Произошла ошибка: {context.error}", exc_info=True)
     if isinstance(update, Update) and update.message:
         try:
             await update.message.reply_text(
-                "❌ Произошла ошибка при обработке. Попробуй начать с /start"
+                "❌ Произошла ошибка при обработке. Попробуй начать с /help"
             )
         except:
-            pass  # Игнорируем, если не можем отправить
+            pass
 
 def main() -> None:
     # Проверка токена и URL
@@ -495,7 +586,7 @@ def main() -> None:
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_description),
                 CommandHandler("cancel", cancel)
             ],
-            WAITING_FOR_DELETE_NUMBER: [  # Новый статус для удаления
+            WAITING_FOR_DELETE_NUMBER: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_delete_number),
                 CommandHandler("cancel", cancel)
             ],
@@ -506,15 +597,20 @@ def main() -> None:
     )
 
     application.add_handler(conv_handler)
+    application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("archive", show_archive))
-    application.add_handler(CommandHandler("delete", delete_photo))  # Новая команда
+    application.add_handler(CommandHandler("delete", delete_photo))
     
     # Обработчики callback-кнопок
+    application.add_handler(CallbackQueryHandler(help_command, pattern="^help_command$"))
     application.add_handler(CallbackQueryHandler(view_photos, pattern="^view_photos$"))
     application.add_handler(CallbackQueryHandler(select_photo, pattern=r"^select_photo_\d+$"))
     application.add_handler(CallbackQueryHandler(handle_photo_navigation, pattern="^(prev_photo|next_photo|close_viewer)$"))
     application.add_handler(CallbackQueryHandler(delete_current_photo, pattern="^delete_current_photo$"))
     application.add_handler(CallbackQueryHandler(delete_photo, pattern="^delete_photo_prompt$"))
+    application.add_handler(CallbackQueryHandler(cancel_delete, pattern="^cancel_delete$"))
+    application.add_handler(CallbackQueryHandler(start_saving, pattern="^start_saving$"))
+    application.add_handler(CallbackQueryHandler(view_archive, pattern="^view_archive$"))
     
     application.add_error_handler(error_handler)
 
